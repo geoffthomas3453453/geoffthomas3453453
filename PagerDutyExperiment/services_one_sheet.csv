@@ -1,0 +1,3 @@
+business_service_name,business_service_description,technical_service_name,technical_service_description,escalation_policy_id,auto_resolve_timeout,acknowledgement_timeout
+Test Terraform1 (BS),Test from terraform,Test Terraform A (TS),Test terraform A description,PJYYVRR,14400,600
+Test Terraform2 (BS),Test from terraform,Test Terraform B (TS),Test terraform B description,PJYYVRR,,

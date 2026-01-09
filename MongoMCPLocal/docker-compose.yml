@@ -1,0 +1,84 @@
+
+version: "3.9"
+
+services:
+  # 1) LLM runtime (Ollama)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"            # Ollama REST API
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment this block if you have an NVIDIA GPU and the NVIDIA Container Toolkit installed
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: ["gpu"]
+    deploy:
+      resources:
+        limits:
+    ##      cpus: '0.001'
+          memory: 5G
+    restart: unless-stopped
+
+  # 2) Open WebUI frontend
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    depends_on:
+      - ollama
+    ports:
+      - "3000:8080"              # Web UI on http://localhost:3000
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # Set a persistent secret. If you later add API keys or tool connections,
+      # Open WebUI uses this to encrypt stored credentials.
+      - WEBUI_SECRET_KEY=please-change-me
+    volumes:
+      - openwebui_data:/app/backend/data
+    restart: unless-stopped
+
+  # 3) Sample MongoDB
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=devroot
+      - MONGO_INITDB_ROOT_PASSWORD=devpass
+      - MONGO_INITDB_DATABASE=sampledb
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  # 4) MongoDB MCP server (official image)
+  #    Runs with HTTP transport so it stays up as a long-lived service.
+  mongodb-mcp:
+    image: mongodb/mongodb-mcp-server:latest
+    container_name: mongodb-mcp
+    depends_on:
+      - mongo
+    ports:
+      - "3001:3001"              # MCP HTTP transport (not OpenAPI)
+    environment:
+      # Safe default: read-only access to avoid accidental writes
+      - MDB_MCP_READ_ONLY=true
+      # Point it at the sample Mongo in this compose stack
+      - MDB_MCP_CONNECTION_STRING=mongodb://devroot:devpass@mongo:27017/sampledb?authSource=admin
+      # Expose HTTP transport on 0.0.0.0:3001
+      - MDB_MCP_TRANSPORT=http
+      - MDB_MCP_HTTP_HOST=0.0.0.0
+      - MDB_MCP_HTTP_PORT=3001
+      # Optional: send logs to stderr + MCP client
+      - MDB_MCP_LOGGERS=stderr,mcp
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  openwebui_data:
+  mongo_data:

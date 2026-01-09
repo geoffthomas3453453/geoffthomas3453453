@@ -1,0 +1,2 @@
+provide me a docker compose file that creates a local development experiment for an LLM.
+The compose file should have an LLM, an exposed openweb UI front end, an MCP server for mongo DB, and a sample mongoDB container

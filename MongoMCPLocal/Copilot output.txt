@@ -1,0 +1,200 @@
+Awesome—here’s a ready-to-run `docker-compose.yml` that spins up a complete local LLM dev sandbox with:
+
+*   **Ollama** (the LLM runtime)
+*   **Open WebUI** (a browser UI, exposed on port `3000`)
+*   **MongoDB** (sample database, exposed on `27017`)
+*   **MongoDB MCP server** (runs with HTTP transport so it stays up as a service)
+
+> **Why these choices?**  
+> *Open WebUI* is the simplest way to interact with local models, and it natively talks to *Ollama* over `OLLAMA_BASE_URL`.   
+> The **official MongoDB MCP server** can run in containers and (optionally) expose an **HTTP transport**—handy for keeping it alive as a service in compose. [\[github.com\]](https://github.com/open-webui/open-webui/blob/main/docker-compose.yaml), [\[docs.openwebui.com\]](https://docs.openwebui.com/getting-started/quick-start/) [\[hub.docker.com\]](https://hub.docker.com/r/mongodb/mongodb-mcp-server), [\[github.com\]](https://github.com/mongodb-js/mongodb-mcp-server)
+
+***
+
+## `docker-compose.yml`
+
+```yaml
+version: "3.9"
+
+services:
+  # 1) LLM runtime (Ollama)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"            # Ollama REST API
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment this block if you have an NVIDIA GPU and the NVIDIA Container Toolkit installed
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: ["gpu"]
+    restart: unless-stopped
+
+  # 2) Open WebUI frontend
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    depends_on:
+      - ollama
+    ports:
+      - "3000:8080"              # Web UI on http://localhost:3000
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # Set a persistent secret. If you later add API keys or tool connections,
+      # Open WebUI uses this to encrypt stored credentials.
+      - WEBUI_SECRET_KEY=please-change-me
+    volumes:
+      - openwebui_data:/app/backend/data
+    restart: unless-stopped
+
+  # 3) Sample MongoDB
+  mongo:
+    image: mongo:7
+    container_name: mongo
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=devroot
+      - MONGO_INITDB_ROOT_PASSWORD=devpass
+      - MONGO_INITDB_DATABASE=sampledb
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  # 4) MongoDB MCP server (official image)
+  #    Runs with HTTP transport so it stays up as a long-lived service.
+  mongodb-mcp:
+    image: mongodb/mongodb-mcp-server:latest
+    container_name: mongodb-mcp
+    depends_on:
+      - mongo
+    ports:
+      - "3001:3001"              # MCP HTTP transport (not OpenAPI)
+    environment:
+      # Safe default: read-only access to avoid accidental writes
+      - MDB_MCP_READ_ONLY=true
+      # Point it at the sample Mongo in this compose stack
+      - MDB_MCP_CONNECTION_STRING=mongodb://devroot:devpass@mongo:27017/sampledb?authSource=admin
+      # Expose HTTP transport on 0.0.0.0:3001
+      - MDB_MCP_TRANSPORT=http
+      - MDB_MCP_HTTP_HOST=0.0.0.0
+      - MDB_MCP_HTTP_PORT=3001
+      # Optional: send logs to stderr + MCP client
+      - MDB_MCP_LOGGERS=stderr,mcp
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
+  openwebui_data:
+  mongo_data:
+```
+
+***
+
+## How to use it
+
+1.  **Start the stack**
+
+```bash
+docker compose up -d
+```
+
+2.  **Open the UI**
+
+*   Visit **<http://localhost:3000>** for **Open WebUI**.  
+    The first account you sign up with becomes **Admin** (user management & settings). [\[docs.openwebui.com\]](https://docs.openwebui.com/getting-started/quick-start/)
+
+3.  **Load a model**
+
+From any terminal:
+
+```bash
+# Example: pull a small model
+docker exec -it ollama ollama pull llama3:latest
+# or mistral, qwen, granite, etc.
+```
+
+Open WebUI will discover Ollama models automatically via `OLLAMA_BASE_URL`. [\[github.com\]](https://github.com/open-webui/open-webui/blob/main/docker-compose.yaml)
+
+4.  **MongoDB MCP server**
+
+*   It’s reachable at **<http://localhost:3001>** using **MCP HTTP transport** (the server supports `--transport http` with `--httpHost/--httpPort`). [\[github.com\]](https://github.com/mongodb-js/mongodb-mcp-server)
+*   Credentials are set via `MDB_MCP_CONNECTION_STRING` and we run in **read-only mode** by default. [\[hub.docker.com\]](https://hub.docker.com/r/mongodb/mongodb-mcp-server), [\[github.com\]](https://github.com/mongodb-js/mongodb-mcp-server)
+
+***
+
+## Important notes & options
+
+*   **Open WebUI secrets**  
+    If you add tool connections or API keys later, keep `WEBUI_SECRET_KEY` stable so the app can decrypt saved credentials. [\[docs.openwebui.com\]](https://docs.openwebui.com/features/plugin/tools/openapi-servers/mcp/)
+
+*   **GPU acceleration**  
+    Ollama supports NVIDIA GPUs in containers if you install the **NVIDIA Container Toolkit**. Uncomment the `deploy.resources.reservations.devices` block above. [\[itsfoss.com\]](https://itsfoss.com/ollama-docker/)
+
+*   **MCP in Open WebUI**  
+    Open WebUI doesn’t speak MCP directly. To use MCP tools inside chats, add the **MCPO (MCP→OpenAPI proxy)** (one small service) and register it under **Settings → Tools** in Open WebUI. The MCPO container exposes your MCP tools as standard HTTP/OpenAPI endpoints that Open WebUI can call. [\[docs.openwebui.com\]](https://docs.openwebui.com/features/plugin/tools/openapi-servers/mcp/)
+
+### Optional: add MCPO (bridge MCP → OpenAPI for Open WebUI)
+
+Create `mcpo-config.json` next to your compose file:
+
+```json
+{
+  "servers": [
+    {
+      "name": "MongoDB",
+      "command": "npx",
+      "args": ["-y", "mongodb-mcp-server@latest", "--readOnly"],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING": "mongodb://devroot:devpass@mongo:27017/sampledb?authSource=admin"
+      }
+    }
+  ],
+  "http": {
+    "host": "0.0.0.0",
+    "port": 8000
+  }
+}
+```
+
+Then add this service to the compose file:
+
+```yaml
+  mcpo:
+    image: ghcr.io/open-webui/mcpo:main
+    container_name: mcpo
+    depends_on:
+      - mongo
+    ports:
+      - "8000:8000"     # MCPO endpoint with generated OpenAPI
+    volumes:
+      - ./mcpo-config.json:/app/config/config.json:ro
+    command: ["mcpo", "--config", "/app/config/config.json"]
+    environment:
+      - MCPO_API_KEY=dev-key-please-change
+    restart: unless-stopped
+```
+
+Finally, in **Open WebUI → Settings → Tools**, add a connection to the MCPO OpenAPI endpoint (e.g., `http://mcpo:8000` with the API key you set). [\[docs.openwebui.com\]](https://docs.openwebui.com/features/plugin/tools/openapi-servers/mcp/), [\[lobehub.com\]](https://lobehub.com/mcp/baronco-open-webui-and-mcpo)
+
+***
+
+## Troubleshooting
+
+*   **Open WebUI can’t see Ollama**  
+    Make sure `OLLAMA_BASE_URL=http://ollama:11434` is set and both services are on the same Docker network (Compose does this by default). The official compose examples use exactly this setup. [\[github.com\]](https://github.com/open-webui/open-webui/blob/main/docker-compose.yaml)
+
+*   **MongoDB auth errors**  
+    Confirm the `authSource=admin` in your connection string matches the root user database (we use the default admin db in this example). The MongoDB MCP server expects a valid connection string via `MDB_MCP_CONNECTION_STRING`. [\[hub.docker.com\]](https://hub.docker.com/r/mongodb/mongodb-mcp-server)
+
+*   **MCP server exits immediately**  
+    Using **HTTP transport** keeps it running as a service. The default **stdio** transport expects an attached MCP client and may exit if none is connected. Use `MDB_MCP_TRANSPORT=http` (already set above). [\[github.com\]](https://github.com/mongodb-js/mongodb-mcp-server)
+
+***
+
+If you’d like, I can tailor this for your machine (e.g., enable NVIDIA GPU, pre-pull specific models, or seed MongoDB with sample data). Do you have a preferred LLM (size/family) for your experiments, Geoff?
